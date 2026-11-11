@@ -1,71 +1,70 @@
 #include <SKSE/SKSE.h>
-#include <RE/Skyrim.h>
+#include <REL/Relocation.h>
+
+namespace RE {
+    class Main;
+    class PlayerCharacter {
+    public:
+        static PlayerCharacter* GetSingleton() {
+            using func_t = decltype(&PlayerCharacter::GetSingleton);
+            REL::Relocation<func_t> func{ REL::ID(39339) }; // 1.5.97 Player ID
+            return func();
+        }
+        
+        void SetActorValue(uint32_t a_akValue, float a_value) {
+            using func_t = void(PlayerCharacter*, uint32_t, float);
+            REL::Relocation<func_t> func{ REL::ID(37515) }; // SetActorValue ID
+            func(this, a_akValue, a_value);
+        }
+    };
+}
 
 namespace AutoEagleEye {
-    class UpdateHandler {
-    public:
-        static void Update(RE::Main* a_main) {
-            _Update(a_main);
+    using Update_t = void(*)(RE::Main*);
+    Update_t orgUpdate = nullptr;
 
-            auto player = RE::PlayerCharacter::GetSingleton();
-            if (!player) return;
-
-            // 1. 检查是否正在拉弓/装弩
-            auto attackingWeapon = player->GetAttackingWeapon();
-            if (!attackingWeapon || !attackingWeapon->object) return;
-
-            auto weaponData = attackingWeapon->object->As<RE::TESObjectWEAP>();
-            if (!weaponData || (!weaponData->IsBow() && !weaponData->IsCrossbow())) return;
-
-            // 2. 检查是否有鹰眼天赋 (FormID: 0x58F61)
-            static auto* eagleEyePerk = RE::TESForm::LookupByID<RE::BGSPerk>(0x00058F61);
-            if (!eagleEyePerk || !player->HasPerk(eagleEyePerk)) return;
-
-            // 1.5.97 特有的底层拉弓进度获取
-            float bowDrawnPercent = player->GetActorRuntimeData().bowDrawnPercent;
-
-            auto controlMap = RE::ControlMap::GetSingleton();
-            if (!controlMap) return;
-
-            // 核心控制切换
-            if (bowDrawnPercent > 0.1f) {
-                // 强行向引擎发送按下防御键(Block)的标志，直接开启鹰眼
-                player->SetActorValue(RE::ActorValue::kBlock, 1.0f);
-            }
+    void HookedUpdate(RE::Main* a_main) {
+        if (orgUpdate) {
+            orgUpdate(a_main);
         }
 
-        static inline REL::Relocation<decltype(&Update)> _Update;
-    };
+        auto player = RE::PlayerCharacter::GetSingleton();
+        if (!player) return;
+
+        // 获取拉弓进度的内存偏移量 (1.5.97 中 player + 0xB58 是 bowDrawnPercent)
+        float* bowDrawnPercent = reinterpret_cast<float*>(reinterpret_cast<char*>(player) + 0xB58);
+        
+        if (bowDrawnPercent && *bowDrawnPercent > 0.1f) {
+            // 24 是 Block (防御/鹰眼) 的 ActorValue ID
+            player->SetActorValue(24, 1.0f);
+        }
+    }
 
     void Install() {
-        // 1.5.97 特定的 Main::Update 虚函数表地址注入
-        REL::Relocation<std::uintptr_t> mainVtbl{ RE::VTABLE_Main[0] };
-        UpdateHandler::_Update = mainVtbl.write_vfunc(0x5, UpdateHandler::Update);
-        SKSE::log::info("1.5.97 自动鹰眼插件加载成功！");
+        // 1.5.97 中 Main::Update 的虚函数表地址
+        REL::Relocation<std::uintptr_t> vtbl{ REL::ID(515636) }; 
+        
+        // 安全地修改内存并替换虚函数
+        DWORD oldProtect;
+        VirtualProtect(reinterpret_cast<LPVOID>(vtbl.address() + 0x28), sizeof(std::uintptr_t), PAGE_EXECUTE_READWRITE, &oldProtect);
+        orgUpdate = *reinterpret_cast<Update_t*>(vtbl.address() + 0x28);
+        *reinterpret_cast<std::uintptr_t*>(vtbl.address() + 0x28) = reinterpret_cast<std::uintptr_t>(HookedUpdate);
+        VirtualProtect(reinterpret_cast<LPVOID>(vtbl.address() + 0x28), sizeof(std::uintptr_t), oldProtect, &oldProtect);
     }
 }
 
-extern "C" DLLEXPORT bool SKSEAPI SKSEPlugin_Query(const SKSE::QueryInterface* a_skse, SKSE::PluginInfo* a_info) {
+extern "C" __declspec(dllexport) bool SKSEAPI SKSEPlugin_Query(const SKSE::QueryInterface* a_skse, SKSE::PluginInfo* a_info) {
     a_info->infoVersion = SKSE::PluginInfo::kVersion;
     a_info->name = "AutoEagleEye";
     a_info->version = 1;
-
-    if (a_skse->IsEditor()) {
+    if (a_skse->IsEditor() || a_skse->RuntimeVersion() != SKSE::RUNTIME_1_5_97) {
         return false;
     }
-
-    // 严格限制游戏版本为 1.5.97
-    const auto runtimeVersion = a_skse->RuntimeVersion();
-    if (runtimeVersion != SKSE::RUNTIME_1_5_97) {
-        return false;
-    }
-
     return true;
 }
 
-extern "C" DLLEXPORT bool SKSEAPI SKSEPlugin_Load(const SKSE::LoadInterface* a_skse) {
+extern "C" __declspec(dllexport) bool SKSEAPI SKSEPlugin_Load(const SKSE::LoadInterface* a_skse) {
     SKSE::Init(a_skse);
-    
     auto messaging = SKSE::GetMessagingInterface();
     if (messaging) {
         messaging->RegisterListener([](SKSE::MessagingInterface::Message* a_msg) {
@@ -74,6 +73,5 @@ extern "C" DLLEXPORT bool SKSEAPI SKSEPlugin_Load(const SKSE::LoadInterface* a_s
             }
         });
     }
-
     return true;
 }
