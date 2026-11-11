@@ -1,4 +1,4 @@
-name: Build SKSE Plugin
+name: Build SKSE 原生插件
 
 on: [push, pull_request]
 
@@ -9,24 +9,16 @@ jobs:
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
-      with:
-        submodules: recursive
-      env:
-        ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
 
-    - name: Setup CMake
-      uses: jwlawson/actions-setup-cmake@v2
-      with:
-        cmake-version: '3.22.x'
+    - name: Add MSBuild to PATH
+      uses: microsoft/setup-msbuild@v2
 
-    - name: Configure CMake
-      run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
-
-    - name: Build Plugin
-      run: cmake --build build --config Release
+    - name: 纯原生高速编译
+      run: |
+        cl.exe /O2 /LD /Fe:AutoEagleEye.dll src/main.cpp user32.lib kernel32.lib
 
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
         name: AutoEagleEye-1.5.97
-        path: build/Release/AutoEagleEye.dll
+        path: AutoEagleEye.dll
